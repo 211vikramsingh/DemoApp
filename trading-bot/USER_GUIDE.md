@@ -83,6 +83,8 @@ python -c "import secrets; print(secrets.token_hex(32))"
 ```
 Run this **twice** — paste first output as `SECRET_KEY`, second as `ENCRYPTION_KEY`.
 
+> ⚠️ **The app will refuse to start if `ENCRYPTION_KEY` is left as the default placeholder** (`CHANGE_ME_32_BYTE_HEX`). Always generate a real key.
+
 > **Optional broker keys** — only needed for live trading:
 > - `KITE_API_KEY` / `KITE_API_SECRET` — from https://developers.kite.trade/
 > - `DELTA_API_KEY` / `DELTA_API_SECRET` — from https://www.delta.exchange/app/account/api-keys
@@ -178,6 +180,9 @@ docker compose up -d
 ```
 
 Your data is preserved because the database volume is not affected by rebuilds.
+
+> **After updating `requirements.txt`** (e.g., when `nest-asyncio` was added), always run
+> `docker compose build` to rebuild the backend and celery_worker images.
 
 ---
 

@@ -124,6 +124,7 @@ When creating a strategy, set **Wallet Type** to `paper`.
 ### How it works
 - The bot generates real signals based on live market data
 - Trades are simulated: entries, exits, P&L tracked in the database
+- **Commission modeled** — a 0.05% commission is deducted on every open and close leg, so paper results match realistic live trading costs
 - All risk rules (SL, 3-SL daily limit, Kill Switch) apply identically
 - You see real-time P&L as if trading with real money
 
@@ -304,17 +305,20 @@ GET  /api/kill/status      — check current status
 
 The bot enforces three automatic risk limits that trigger automatic halts.
 
-### Daily Stop-Loss Limit (3 SL hits)
+### Daily Stop-Loss Limit (default: 3 SL hits)
 - After **3 stop-losses in a single day**, all trading halts for that day
+- Default limit is **3**; admins can change this via `DAILY_SL_LIMIT` in `.env`
 - Resets automatically at midnight (next trading day)
 - **Cannot be overridden by users** — only admins can reset early
 
-### Weekly Drawdown (8%)
+### Weekly Drawdown (default: 8%)
 - If your portfolio loses **8% over any rolling 5-trading-day period**, trading halts for the rest of the week
+- Default threshold is **8%**; admins can change this via `WEEKLY_DRAWDOWN_PCT` in `.env`
 - Resets automatically at the start of the next trading week (Monday)
 
-### Monthly Drawdown (15%)
+### Monthly Drawdown (default: 15%)
 - If your portfolio loses **15% in a calendar month**, trading halts for the rest of that month
+- Default threshold is **15%**; admins can change this via `MONTHLY_DRAWDOWN_PCT` in `.env`
 - Requires **admin manual reset** to re-enable early
 
 ### What to do when halted
@@ -420,9 +424,20 @@ Backtesting lets you test a strategy on **historical data** before trading live.
 {
   "start_date": "2024-01-01",
   "end_date": "2024-12-31",
-  "initial_capital": 1000000
+  "initial_capital": 1000000,
+  "strategy_type": "ema_cross",
+  "commission_pct": 0.0005
 }
 ```
+
+**Available strategy types:**
+
+| `strategy_type` | Algorithm |
+|---|---|
+| `ema_cross` | EMA crossover (default) — fast EMA crosses above/below slow EMA |
+| `rsi` | RSI mean-reversion — buy oversold, sell overbought |
+| `breakout` | Donchian channel breakout — enter on N-period high/low break |
+| `custom` | Inject your own `bt.Strategy` subclass via the API |
 
 5. The response includes:
    - Total return %

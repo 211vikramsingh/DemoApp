@@ -43,27 +43,82 @@ def decode_access_token(token: str) -> dict:
 
 
 # ── AES-256-GCM encryption for broker API secrets ────────────────────────────
+#
+# Encrypted format (base64-encoded):
+#   byte 0       : version (currently 0x01)
+#   bytes 1-12   : random 96-bit nonce
+#   bytes 13+    : AES-256-GCM ciphertext + 16-byte auth tag
+#
+# Version byte allows future key rotation: decrypt old blobs with old key,
+# re-encrypt with new key, bump version byte.
+
+_CURRENT_VERSION = b"\x01"
+
 
 def _get_aes_key() -> bytes:
-    """Derive a 32-byte key from the hex-encoded encryption_key setting."""
+    """
+    Derive a 32-byte AES key from the hex-encoded ENCRYPTION_KEY env var.
+    Raises ValueError at startup if the key is misconfigured rather than
+    silently degrading entropy (e.g. via null-byte padding).
+    """
     raw = settings.encryption_key
-    key_bytes = bytes.fromhex(raw) if len(raw) == 64 else raw.encode()[:32]
-    return key_bytes.ljust(32, b"\x00")
+    if raw in ("CHANGE_ME_32_BYTE_HEX", ""):
+        raise ValueError(
+            "ENCRYPTION_KEY is not set. Generate one with: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    try:
+        key_bytes = bytes.fromhex(raw)
+    except ValueError:
+        raise ValueError(
+            "ENCRYPTION_KEY must be a 64-character hex string (32 bytes). "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if len(key_bytes) != 32:
+        raise ValueError(
+            f"ENCRYPTION_KEY decoded to {len(key_bytes)} bytes; exactly 32 required."
+        )
+    return key_bytes
 
 
 def encrypt_secret(plaintext: str) -> str:
-    """Encrypt a broker secret with AES-256-GCM. Returns base64-encoded ciphertext."""
+    """
+    Encrypt a broker secret with AES-256-GCM.
+    Returns base64-encoded blob: version(1) + nonce(12) + ciphertext+tag.
+    """
     key = _get_aes_key()
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
     ct = aesgcm.encrypt(nonce, plaintext.encode(), None)
-    return base64.b64encode(nonce + ct).decode()
+    return base64.b64encode(_CURRENT_VERSION + nonce + ct).decode()
 
 
 def decrypt_secret(encoded: str) -> str:
-    """Decrypt a previously encrypted broker secret."""
+    """
+    Decrypt a previously encrypted broker secret.
+    Validates the version byte to detect key rotation mismatches.
+    Raises ValueError if decryption fails (wrong key, corrupted data).
+    """
     key = _get_aes_key()
     aesgcm = AESGCM(key)
-    raw = base64.b64decode(encoded)
-    nonce, ct = raw[:12], raw[12:]
-    return aesgcm.decrypt(nonce, ct, None).decode()
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception as exc:
+        raise ValueError(f"Invalid base64 in encrypted secret: {exc}") from exc
+
+    if len(raw) < 14:  # 1 version + 12 nonce + at least 1 byte ciphertext
+        raise ValueError("Encrypted secret is too short — data may be corrupted")
+
+    version, nonce, ct = raw[0:1], raw[1:13], raw[13:]
+    if version != _CURRENT_VERSION:
+        raise ValueError(
+            f"Encrypted secret version {version!r} does not match current version "
+            f"{_CURRENT_VERSION!r}. Re-encrypt with the current key."
+        )
+
+    try:
+        return aesgcm.decrypt(nonce, ct, None).decode()
+    except Exception as exc:
+        raise ValueError(
+            "AES-GCM decryption failed — wrong ENCRYPTION_KEY or corrupted ciphertext"
+        ) from exc

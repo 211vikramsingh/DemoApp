@@ -85,16 +85,16 @@ trading-bot/
 │       │   ├── kelly_sizer.py      ← Kelly criterion position sizing
 │       │   ├── max_pain.py         ← Options max pain calculator
 │       │   ├── multi_leg_builder.py ← Multi-leg options strategy builder
-│       │   ├── backtesting_engine.py ← Historical strategy testing
-│       │   └── paper_trading.py    ← Simulated trade execution
+│       │   ├── backtesting_engine.py ← Strategy factory: ema_cross / rsi / breakout / custom
+│       │   └── paper_trading.py    ← Simulated trade execution with commission modeling
 │       ├── brokers/
 │       │   ├── base.py         ← Abstract broker interface
 │       │   ├── kite_adapter.py ← Zerodha Kite Connect integration
 │       │   └── delta_adapter.py ← Delta Exchange integration
 │       └── workers/
 │           ├── celery_app.py   ← Celery configuration + Redis broker
-│           ├── strategy_worker.py ← Runs strategies in background
-│           └── data_worker.py  ← Fetches market data, event calendar, funding rates
+│           ├── strategy_worker.py ← Full signal loop: price → signal → size → execute → DB → WS
+│           └── data_worker.py  ← options_chain / funding_rates / events / price_cache (every 15s)
 │
 ├── frontend/                   ← React TypeScript application
 │   ├── Dockerfile
@@ -176,10 +176,14 @@ trading-bot/
 
 ### Service 4: celery_worker (Background Tasks)
 - **Image**: Same Docker image as backend (same `requirements.txt`)
-- **Framework**: Celery 5.4 + Redis as message broker
+- **Framework**: Celery 5.4 + Redis as message broker + `nest-asyncio 1.6.0`
 - **What it runs**:
-  - `strategy_worker.py` — polls strategies, generates signals, executes trades
-  - `data_worker.py` — fetches market data, event calendar (NSE corporate actions), funding rates (Delta Exchange)
+  - `strategy_worker.py` — per-active-strategy loop: circuit breaker → Redis price cache → `compute_signal()` → `kelly_sizer` → paper/live execution → DB write → WebSocket push
+  - `data_worker.py` — four Celery Beat tasks:
+    - `ingest_options_chain` — enriches strikes with Greeks, upserts `options_chain` table
+    - `ingest_funding_rates` — upserts `funding_rates` table for BTC/ETH/SOL
+    - `refresh_event_calendar` — NSE corporate actions + RBI MPC events
+    - `refresh_price_cache` — fetches LTP for all tracked instruments every 15 s and caches in Redis (`price:{instrument}:latest`)
 - **Queue priority**: `kill_queue` has higher priority than `default` — Kill Switch commands are always processed first
 - **No port exposed** — only communicates via Redis and PostgreSQL
 
@@ -207,7 +211,13 @@ trading-bot/
   2. **Circuit breaker state**: Daily SL count, halt flags stored as Redis keys (namespaced by user ID and date)
 - **Port**: 6379 (internal only)
 - **Volume**: `redis_data` (persists across restarts)
-- **Key naming pattern**: `cb:daily_sl:{user_id}:{date}`, `cb:kill_halt:{user_id}`, etc.
+- **Key naming pattern**:
+  - `cb:daily_sl:{user_id}:{date}` — daily SL counter
+  - `cb:kill_halt:{user_id}` — circuit breaker halt flag
+  - `price:{instrument}:latest` — latest OHLCV bar (TTL 30 s, refreshed by data_worker every 15 s)
+  - `options_chain:{underlying}:latest` — full options chain JSON (TTL 4 min)
+  - `pending_signal:{strategy_id}` — semi-auto signal awaiting user approval (TTL 5 min)
+  - `drawdown:{user_id}:daily` — current drawdown pct for dashboard display
 
 ---
 
@@ -278,10 +288,12 @@ Here is exactly what happens from strategy creation to trade execution:
 2. POST /api/strategies → backend saves to PostgreSQL
         │
         ▼
-3. celery_worker picks up the strategy (polls every N seconds)
+3. celery_worker picks up the strategy (polls every 5 seconds via POLL_INTERVAL)
         │
         ▼
-4. data_worker fetches OHLCV data from Kite/Delta API
+4. data_worker.refresh_price_cache runs on its own 15-second Beat schedule,
+   writing price:{instrument}:latest into Redis.
+   strategy_worker reads from this Redis cache each tick — no direct broker calls per tick.
         │
         ▼
 5. signal_engine.compute_signal() called:
@@ -298,6 +310,7 @@ Here is exactly what happens from strategy creation to trade execution:
         ▼
 7. risk_manager.CircuitBreaker.is_halted() called:
    - Checks Redis for daily SL count, weekly/monthly drawdown
+   - Thresholds are configurable per settings (DAILY_SL_LIMIT, WEEKLY_DRAWDOWN_PCT, etc.)
    - Returns halt reason if applicable
         │
    ┌────┴────────────────────────────────────────┐
@@ -308,8 +321,13 @@ Here is exactly what happens from strategy creation to trade execution:
         │
         ▼
 8. Wallet type check:
-   - paper → paper_trading.simulate_order() → write to DB
-   - real  → broker.place_order() → Kite/Delta API → write to DB
+   - paper → paper_trading.PaperTradingEngine.submit_market_order()
+             charges commission_pct on open and close legs
+             writes Trade to DB
+   - semi-auto → signal stored in Redis pending_signal:{strategy_id} + WS notification sent;
+                 user must approve in StrategyDashboard
+   - auto/real  → broker.place_order() → Kite/Delta API (with retry + error classification)
+                  writes Trade to DB
         │
         ▼
 9. WebSocket pushes trade notification to browser
@@ -464,6 +482,7 @@ These are placeholders only. Paper trading works without them.
 Use this checklist before going live or sharing the app.
 
 ### Credentials (Critical)
+- [ ] Set `ENCRYPTION_KEY` to a valid 64-char hex string — app **will not start** with the default placeholder (enforced at startup from v2.0.0)
 - [ ] Change `FIRST_RUN_ADMIN_PASSWORD` from `changeme_strong_password` to a strong unique password
 - [ ] Change `DB_PASSWORD` from `changeme` to a strong unique password
 - [ ] Generate a random `SECRET_KEY` (64 hex chars) — never use the default
@@ -524,3 +543,11 @@ Complete list of all variables in `.env` with descriptions:
 | `DAILY_SL_LIMIT` | `3` | Halt after 3 stop-losses in one day |
 | `WEEKLY_DRAWDOWN_PCT` | `0.08` | Halt if 8% rolling 5-day drawdown |
 | `MONTHLY_DRAWDOWN_PCT` | `0.15` | Halt if 15% calendar-month drawdown |
+
+### Dependency notes
+
+| Package | Version | Note |
+|---|---|---|
+| `nest-asyncio` | `1.6.0` | Allows `asyncio.run()` inside a Celery sync task that already has a running loop |
+| `bcrypt` | `4.0.1` | Pinned — passlib 1.7.4 is incompatible with bcrypt ≥ 4.2 |
+| `scipy` | `≥ 1.11` | Required for Black-Scholes Greeks in `greeks_engine.py` |
