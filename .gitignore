@@ -1,0 +1,51 @@
+# Secrets — NEVER commit these
+trading-bot/.env
+trading-bot/**/.env
+**/.env.local
+**/.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Node / Frontend
+node_modules/
+trading-bot/frontend/node_modules/
+trading-bot/frontend/dist/
+trading-bot/frontend/.vite/
+
+# Test / coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+*.lcov
+
+# Docker
+trading-bot/docker/postgres/data/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

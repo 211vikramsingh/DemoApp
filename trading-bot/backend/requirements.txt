@@ -1,0 +1,49 @@
+# ── Web Framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# ── Pydantic & Settings ───────────────────────────────────────────────────────
+pydantic==2.7.1
+pydantic-settings==2.3.1
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+
+# ── Task Queue ────────────────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.0.4
+
+# ── Auth & Security ───────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+pyotp==2.9.0
+cryptography==42.0.8
+
+# ── HTTP Client ───────────────────────────────────────────────────────────────
+httpx==0.27.0
+websockets==12.0
+
+# ── Broker APIs ───────────────────────────────────────────────────────────────
+kiteconnect==5.0.1
+
+# ── Data & Analysis ───────────────────────────────────────────────────────────
+pandas==2.2.2
+# pandas-ta removed: not available on PyPI for Python 3.11 (use ta-lib or pandas_ta from git if needed)
+numpy==1.26.4
+scipy==1.13.1
+
+# ── Backtesting ───────────────────────────────────────────────────────────────
+backtrader==1.9.78.123
+
+# ── Historical Data Fallback ──────────────────────────────────────────────────
+yfinance==0.2.40
+
+# ── Scheduling ────────────────────────────────────────────────────────────────
+APScheduler==3.10.4
+
+# ── Notifications ────────────────────────────────────────────────────────────
+python-telegram-bot==21.3
